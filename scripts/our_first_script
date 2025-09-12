@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# Author: Neil Hendren
+# Date of Creation: 9/12/2025
+# Last Modified: 9/12/2025
+# Description: For instructional use of how to write bash shell scripts
+
+echo 'This is my first script'
+
+exit 0
