@@ -4,11 +4,13 @@
 # Date Created: 09/12/2025
 # Last Modified: 09/12/2025
 # Description: Backs up all files in the user's home directory
-# Usage: /Users/neilhendren/bash_scripts_course/backup_home
+# Usage: backup_home
 
 echo "Now backing up home directory..."
 
-tar -cvf ~/Documents/bash_scripts_course/my_backup_"$(date +%d-%m-%Y_%H-%M-%S)".tar ~/* 2>/dev/null
+currentdir=$(pwd)
+
+tar -cvf $currentdir/my_backup_"$(date +%d-%m-%Y_%H-%M-%S)".tar ~/* 2>/dev/null
 
 echo "Home directory successfully backed up."
 
