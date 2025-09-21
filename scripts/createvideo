@@ -2,12 +2,64 @@
 
 import { execFile, spawn } from "child_process";
 
-const rawArg = process.argv[2];
-if (!rawArg) {
-  console.error("Usage: createvideo <YouTube URL>");
+// Args: createvideo <YouTube URL> [-t <start> <end>]
+const urlArg = process.argv[2];
+const maybeFlag = process.argv[3];
+const trimStartStr = process.argv[4];
+const trimEndStr = process.argv[5];
+
+if (!urlArg) {
+  console.error("Usage: createvideo <YouTube URL> [-t <start> <end>]");
   process.exit(1);
 }
-const youtubeUrl = String(rawArg);
+
+const useTrim = maybeFlag === "-t";
+if (useTrim && (!trimStartStr || !trimEndStr)) {
+  console.error(
+    "Usage: createvideo <YouTube URL> -t <start> <end>\nExample: createvideo <URL> -t 00:01:30 00:02:34"
+  );
+  process.exit(1);
+}
+
+function parseTimeToSeconds(str) {
+  // Accept H:MM:SS, MM:SS, or SS
+  const parts = String(str)
+    .split(":")
+    .map((p) => p.trim());
+  if (parts.some((p) => p === "" || isNaN(Number(p)))) return NaN;
+  let s = 0;
+  if (parts.length === 3) {
+    const [h, m, sec] = parts.map(Number);
+    s = h * 3600 + m * 60 + sec;
+  } else if (parts.length === 2) {
+    const [m, sec] = parts.map(Number);
+    s = m * 60 + sec;
+  } else if (parts.length === 1) {
+    s = Number(parts[0]);
+  } else {
+    return NaN;
+  }
+  return s;
+}
+
+let trimStartSec = 0;
+let trimEndSec = 0;
+let trimDurationSec = 0;
+if (useTrim) {
+  trimStartSec = parseTimeToSeconds(trimStartStr);
+  trimEndSec = parseTimeToSeconds(trimEndStr);
+  if (!isFinite(trimStartSec) || !isFinite(trimEndSec)) {
+    console.error("Invalid time format. Use HH:MM:SS, MM:SS, or SS.");
+    process.exit(1);
+  }
+  if (trimEndSec <= trimStartSec) {
+    console.error("End time must be greater than start time.");
+    process.exit(1);
+  }
+  trimDurationSec = Math.floor(trimEndSec - trimStartSec);
+}
+
+const youtubeUrl = String(urlArg);
 
 // Run yt-dlp and stream logs live
 const ytdlp = spawn("yt-dlp", [
@@ -53,61 +105,97 @@ ytdlp.on("close", (code) => {
         return;
       }
 
-      // Convert using ffmpeg, stream logs
-      const ffmpeg = spawn("ffmpeg", [
-        "-y",
-        "-i",
-        fileName,
-        "-vcodec",
-        "libx264",
-        "-acodec",
-        "aac",
-        "output.mp4",
-      ]);
+      const ext = fileName.includes(".") ? fileName.split(".").pop() : "mp4";
+      const trimmedName = `temp_trimmed.${ext}`;
 
-      ffmpeg.stdout.on("data", (data) => process.stdout.write(data));
-      ffmpeg.stderr.on("data", (data) => process.stderr.write(data));
+      const convertToMp4 = (inputPath) => {
+        // Convert using ffmpeg, stream logs
+        const ffmpeg = spawn("ffmpeg", [
+          "-y",
+          "-i",
+          inputPath,
+          "-vcodec",
+          "libx264",
+          "-acodec",
+          "aac",
+          "output.mp4",
+        ]);
 
-      ffmpeg.on("error", (err) => {
-        console.error(`Failed to start ffmpeg: ${err.message}`);
-      });
+        ffmpeg.stdout.on("data", (data) => process.stdout.write(data));
+        ffmpeg.stderr.on("data", (data) => process.stderr.write(data));
 
-      ffmpeg.on("close", (ffCode) => {
-        if (ffCode !== 0) {
-          console.error(`ffmpeg exited with code ${ffCode}`);
-          process.exit(ffCode ?? 1);
-        }
+        ffmpeg.on("error", (err) => {
+          console.error(`Failed to start ffmpeg: ${err.message}`);
+        });
 
-        const dest = `${process.env.HOME}/Downloads/output_${Date.now()}.mp4`;
-        // Move output and then remove temps
-        execFile(
-          "/bin/sh",
-          ["-c", `mv output.mp4 "${dest}"`],
-          (mvErr, mvStdout, mvStderr) => {
-            if (mvErr) {
-              console.error(`Error moving output file: ${mvErr.message}`);
-              return;
-            }
-            if (mvStderr) process.stderr.write(mvStderr);
-            console.log(`Output file moved to ${dest}.`);
-
-            execFile(
-              "/bin/sh",
-              ["-c", "rm -f temp.*"],
-              (rmErr, rmStdout, rmStderr) => {
-                if (rmErr) {
-                  console.error(
-                    `Error deleting temporary files: ${rmErr.message}`
-                  );
-                  return;
-                }
-                if (rmStderr) process.stderr.write(rmStderr);
-                console.log("Temporary files deleted.");
-              }
-            );
+        ffmpeg.on("close", (ffCode) => {
+          if (ffCode !== 0) {
+            console.error(`ffmpeg exited with code ${ffCode}`);
+            process.exit(ffCode ?? 1);
           }
+
+          const dest = `${process.env.HOME}/Downloads/output_${Date.now()}.mp4`;
+          // Move output and then remove temps
+          execFile(
+            "/bin/sh",
+            ["-c", `mv output.mp4 "${dest}"`],
+            (mvErr, mvStdout, mvStderr) => {
+              if (mvErr) {
+                console.error(`Error moving output file: ${mvErr.message}`);
+                return;
+              }
+              if (mvStderr) process.stderr.write(mvStderr);
+              console.log(`Output file moved to ${dest}.`);
+
+              execFile(
+                "/bin/sh",
+                ["-c", "rm -f temp.* temp_trimmed.*"],
+                (rmErr, rmStdout, rmStderr) => {
+                  if (rmErr) {
+                    console.error(
+                      `Error deleting temporary files: ${rmErr.message}`
+                    );
+                    return;
+                  }
+                  if (rmStderr) process.stderr.write(rmStderr);
+                  console.log("Temporary files deleted.");
+                }
+              );
+            }
+          );
+        });
+      };
+
+      if (useTrim) {
+        // Trim first, then convert
+        const trimProc = spawn("ffmpeg", [
+          "-y",
+          "-i",
+          fileName,
+          "-ss",
+          String(trimStartSec),
+          "-t",
+          String(trimDurationSec),
+          "-c",
+          "copy",
+          trimmedName,
+        ]);
+
+        trimProc.stdout.on("data", (d) => process.stdout.write(d));
+        trimProc.stderr.on("data", (d) => process.stderr.write(d));
+        trimProc.on("error", (err) =>
+          console.error(`Failed to start ffmpeg trim: ${err.message}`)
         );
-      });
+        trimProc.on("close", (tCode) => {
+          if (tCode !== 0) {
+            console.error(`ffmpeg trim exited with code ${tCode}`);
+            process.exit(tCode ?? 1);
+          }
+          convertToMp4(trimmedName);
+        });
+      } else {
+        convertToMp4(fileName);
+      }
     }
   );
 });
