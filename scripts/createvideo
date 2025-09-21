@@ -1,0 +1,81 @@
+#!/Users/neilhendren/.nvm/versions/node/v24.8.0/bin/node
+
+import { execFile, exec } from "child_process";
+
+const rawArg = process.argv[2];
+if (!rawArg) {
+  console.error("Usage: createvideo <YouTube URL>");
+  process.exit(1);
+}
+const youtubeUrl = String(rawArg);
+
+execFile(
+  "yt-dlp",
+  ["--audio-quality=0", "-o", "./temp.%(ext)s", youtubeUrl],
+  (error, stdout, stderr) => {
+    if (error) {
+      console.error(`Error executing yt-dlp: ${error.message}`);
+      return;
+    }
+    if (stderr) {
+      console.error(`yt-dlp stderr: ${stderr}`);
+      return;
+    }
+    console.log(stdout);
+
+    exec("ls temp.* | head -n 1", (error, stdout, stderr) => {
+      if (error) {
+        console.error(`Error finding downloaded file: ${error.message}`);
+        return;
+      }
+      if (stderr) {
+        console.error(`Error finding downloaded file stderr: ${stderr}`);
+        return;
+      }
+      const fileName = stdout.trim();
+
+      exec(
+        `ffmpeg -i "${fileName}" -vcodec libx264 -acodec aac output.mp4`,
+        (error, stdout) => {
+          if (error) {
+            console.error(`Error converting video: ${error.message}`);
+            return;
+          }
+
+          console.log(stdout);
+
+          exec(
+            `mv output.mp4 ~/Downloads/output_${Date.now()}.mp4`,
+            (error, stdout, stderr) => {
+              if (error) {
+                console.error(`Error moving output file: ${error.message}`);
+                return;
+              }
+              if (stderr) {
+                console.error(`Error moving output file stderr: ${stderr}`);
+                return;
+              }
+              console.log("Output file moved to Downloads.");
+
+              exec("rm temp.*", (error, stdout, stderr) => {
+                if (error) {
+                  console.error(
+                    `Error deleting temporary files: ${error.message}`
+                  );
+                  return;
+                }
+                if (stderr) {
+                  console.error(
+                    `Error deleting temporary files stderr: ${stderr}`
+                  );
+                  return;
+                }
+                console.log("Temporary files deleted.");
+              });
+            }
+          );
+        }
+      );
+    });
+  }
+);
