@@ -1,6 +1,6 @@
 #!/Users/neilhendren/.nvm/versions/node/v24.8.0/bin/node
 
-import { execFile, exec } from "child_process";
+import { execFile, spawn } from "child_process";
 
 const rawArg = process.argv[2];
 if (!rawArg) {
@@ -9,73 +9,105 @@ if (!rawArg) {
 }
 const youtubeUrl = String(rawArg);
 
-execFile(
-  "yt-dlp",
-  ["--audio-quality=0", "-o", "./temp.%(ext)s", youtubeUrl],
-  (error, stdout, stderr) => {
-    if (error) {
-      console.error(`Error executing yt-dlp: ${error.message}`);
-      return;
-    }
-    if (stderr) {
-      console.error(`yt-dlp stderr: ${stderr}`);
-      return;
-    }
-    console.log(stdout);
+// Run yt-dlp and stream logs live
+const ytdlp = spawn("yt-dlp", [
+  "--audio-quality=0",
+  "-o",
+  "./temp.%(ext)s",
+  youtubeUrl,
+]);
 
-    exec("ls temp.* | head -n 1", (error, stdout, stderr) => {
-      if (error) {
-        console.error(`Error finding downloaded file: ${error.message}`);
+ytdlp.stdout.on("data", (data) => process.stdout.write(data));
+ytdlp.stderr.on("data", (data) => process.stderr.write(data));
+
+ytdlp.on("error", (err) => {
+  console.error(`Failed to start yt-dlp: ${err.message}`);
+});
+
+ytdlp.on("close", (code) => {
+  if (code !== 0) {
+    console.error(`yt-dlp exited with code ${code}`);
+    process.exit(code ?? 1);
+  }
+
+  // Find first downloaded temp.* file
+  execFile(
+    "/bin/sh",
+    ["-c", "ls -1 temp.* | head -n 1"],
+    (err, stdout, stderr) => {
+      if (err) {
+        console.error(`Error finding downloaded file: ${err.message}`);
         return;
       }
       if (stderr) {
-        console.error(`Error finding downloaded file stderr: ${stderr}`);
+        // ls writes errors to stderr (e.g., no matches). Treat as error if empty stdout
+        if (!stdout.trim()) {
+          console.error(`Error finding downloaded file stderr: ${stderr}`);
+          return;
+        }
+      }
+
+      const fileName = stdout.trim();
+      if (!fileName) {
+        console.error("No downloaded file found matching temp.*");
         return;
       }
-      const fileName = stdout.trim();
 
-      exec(
-        `ffmpeg -i "${fileName}" -vcodec libx264 -acodec aac output.mp4`,
-        (error, stdout) => {
-          if (error) {
-            console.error(`Error converting video: ${error.message}`);
-            return;
-          }
+      // Convert using ffmpeg, stream logs
+      const ffmpeg = spawn("ffmpeg", [
+        "-y",
+        "-i",
+        fileName,
+        "-vcodec",
+        "libx264",
+        "-acodec",
+        "aac",
+        "output.mp4",
+      ]);
 
-          console.log(stdout);
+      ffmpeg.stdout.on("data", (data) => process.stdout.write(data));
+      ffmpeg.stderr.on("data", (data) => process.stderr.write(data));
 
-          exec(
-            `mv output.mp4 ~/Downloads/output_${Date.now()}.mp4`,
-            (error, stdout, stderr) => {
-              if (error) {
-                console.error(`Error moving output file: ${error.message}`);
-                return;
-              }
-              if (stderr) {
-                console.error(`Error moving output file stderr: ${stderr}`);
-                return;
-              }
-              console.log("Output file moved to Downloads.");
+      ffmpeg.on("error", (err) => {
+        console.error(`Failed to start ffmpeg: ${err.message}`);
+      });
 
-              exec("rm temp.*", (error, stdout, stderr) => {
-                if (error) {
-                  console.error(
-                    `Error deleting temporary files: ${error.message}`
-                  );
-                  return;
-                }
-                if (stderr) {
-                  console.error(
-                    `Error deleting temporary files stderr: ${stderr}`
-                  );
-                  return;
-                }
-                console.log("Temporary files deleted.");
-              });
-            }
-          );
+      ffmpeg.on("close", (ffCode) => {
+        if (ffCode !== 0) {
+          console.error(`ffmpeg exited with code ${ffCode}`);
+          process.exit(ffCode ?? 1);
         }
-      );
-    });
-  }
-);
+
+        const dest = `${process.env.HOME}/Downloads/output_${Date.now()}.mp4`;
+        // Move output and then remove temps
+        execFile(
+          "/bin/sh",
+          ["-c", `mv output.mp4 "${dest}"`],
+          (mvErr, mvStdout, mvStderr) => {
+            if (mvErr) {
+              console.error(`Error moving output file: ${mvErr.message}`);
+              return;
+            }
+            if (mvStderr) process.stderr.write(mvStderr);
+            console.log(`Output file moved to ${dest}.`);
+
+            execFile(
+              "/bin/sh",
+              ["-c", "rm -f temp.*"],
+              (rmErr, rmStdout, rmStderr) => {
+                if (rmErr) {
+                  console.error(
+                    `Error deleting temporary files: ${rmErr.message}`
+                  );
+                  return;
+                }
+                if (rmStderr) process.stderr.write(rmStderr);
+                console.log("Temporary files deleted.");
+              }
+            );
+          }
+        );
+      });
+    }
+  );
+});
